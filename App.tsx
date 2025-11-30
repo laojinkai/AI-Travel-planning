@@ -10,8 +10,6 @@ import { Button } from './components/Button';
 
 function App() {
   // --- 1. Synchronous Initialization from LocalStorage ---
-  // This ensures data is ready immediately on first render, preventing "flash of empty" and data loss.
-
   const [sessionsHistory, setSessionsHistory] = useState<ChatSession[]>(() => {
     try {
       const saved = localStorage.getItem('travel_chat_history');
@@ -28,14 +26,11 @@ function App() {
       const savedHistoryStr = localStorage.getItem('travel_chat_history');
       const history = savedHistoryStr ? JSON.parse(savedHistoryStr) : [];
       
-      // Attempt to restore the last active session
       if (lastId) {
         const found = history.find((s: ChatSession) => s.id === lastId);
         if (found) return found;
       }
       
-      // If no valid history, or last session not found, create a fresh default one
-      // But we DO NOT add it to history yet unless user interacts or explicitly creates it
       if (history.length > 0) {
           return history[0];
       }
@@ -92,55 +87,44 @@ function App() {
   const titleInputRef = useRef<HTMLInputElement>(null);
 
   // --- 2. Persistence Effects ---
-
-  // Save history whenever it changes
   useEffect(() => {
     localStorage.setItem('travel_chat_history', JSON.stringify(sessionsHistory));
   }, [sessionsHistory]);
   
-  // Save preferences
   useEffect(() => {
     localStorage.setItem('travel_preferences', JSON.stringify(preferences));
   }, [preferences]);
 
-  // Save active session ID to restore focus on reload
   useEffect(() => {
     localStorage.setItem('last_active_session_id', session.id);
   }, [session.id]);
 
-  // Ensure current session is always in history (initial sync)
   useEffect(() => {
-      // Check if current session exists in history
       const exists = sessionsHistory.find(s => s.id === session.id);
       if (!exists && sessionsHistory.length === 0) {
           if (session.messages.length > 0) {
               setSessionsHistory([session]);
           }
       }
-  }, []); // Run once on mount
+  }, []);
 
-  // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [session.messages, isLoading]);
 
-  // Restore map view if session has map data
   useEffect(() => {
       const lastMapMsg = [...session.messages].reverse().find(m => m.mapData);
       if (lastMapMsg?.mapData) {
           setCurrentMapData(lastMapMsg.mapData);
-          // Only auto-open map on large screens to avoid disrupting mobile view
           if (window.innerWidth > 768 && !isMapOpen) {
               setIsMapOpen(true);
           }
       } else {
           setCurrentMapData(null);
       }
-  }, [session.id]); // Only when switching sessions
+  }, [session.id]);
 
   // --- 3. Core Logic Helpers ---
-
-  // Unified function to update local session AND history list simultaneously
   const updateSessionAndHistory = (newSession: ChatSession) => {
       setSession(newSession);
       setSessionsHistory(prev => {
@@ -148,7 +132,6 @@ function App() {
           if (exists) {
               return prev.map(s => s.id === newSession.id ? newSession : s);
           } else {
-              // Add to top if new
               return [newSession, ...prev];
           }
       });
@@ -158,7 +141,7 @@ function App() {
     const welcomeMsg: Message = {
         id: 'welcome',
         role: 'model',
-        text: "您好！我是您的 AI 智能旅游规划师。请告诉我您想去哪里。",
+        text: "您好！我是您的 AI 智能旅游规划师（基于豆包大模型）。请告诉我您想去哪里。",
         timestamp: Date.now()
     };
 
@@ -169,12 +152,9 @@ function App() {
         updatedAt: Date.now()
     };
 
-    // Reset UI state
     setInput('');
     setCurrentMapData(null);
     setIsMapOpen(false);
-    
-    // IMPORTANT: Save immediately to history so it shows in sidebar
     updateSessionAndHistory(newSession);
   };
 
@@ -194,9 +174,7 @@ function App() {
           setEditingSessionId(null);
           return;
       }
-      
       const newName = tempTitle.trim();
-      
       setSessionsHistory(prev => prev.map(s => s.id === id ? { ...s, name: newName } : s));
       if (session.id === id) {
           setSession(prev => ({ ...prev, name: newName }));
@@ -207,23 +185,18 @@ function App() {
   const deleteSession = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     if (!window.confirm("确定要删除这条行程记录吗？")) return;
-
     const newHistory = sessionsHistory.filter(s => s.id !== id);
     setSessionsHistory(newHistory);
-
-    // If deleting current session
     if (session.id === id) {
         if (newHistory.length > 0) {
             setSession(newHistory[0]);
         } else {
-            // If deleted everything, create a fresh one
             createNewSession();
         }
     }
   };
 
   // --- 4. Chat & AI Logic ---
-
   const handleSendMessage = async (e?: React.FormEvent) => {
     e?.preventDefault();
     if (!input.trim() || isLoading) return;
@@ -235,7 +208,6 @@ function App() {
       timestamp: Date.now()
     };
 
-    // 1. Optimistic Update
     const sessionAfterUserMsg = {
         ...session,
         messages: [...session.messages, userMsg],
@@ -247,17 +219,17 @@ function App() {
     setIsLoading(true);
 
     try {
+      // Pass the *previous* messages as history, current userMsg as new input
       const responseStream = await sendMessageStream(
         null, 
         userMsg.text, 
         preferences,
-        sessionAfterUserMsg.messages 
+        session.messages // History BEFORE this user message
       );
 
       let fullText = '';
       const responseId = (Date.now() + 1).toString();
       
-      // Add placeholder for AI response
       let currentSessionState = {
           ...sessionAfterUserMsg,
           messages: [...sessionAfterUserMsg.messages, { id: responseId, role: 'model' as const, text: '...', timestamp: Date.now() }]
@@ -268,8 +240,6 @@ function App() {
       for await (const chunk of responseStream) {
          if(chunk.text) {
              fullText += chunk.text;
-             
-             // Update local state for smooth typing effect
              currentSessionState = {
                  ...currentSessionState,
                  messages: currentSessionState.messages.map(m => 
@@ -280,12 +250,9 @@ function App() {
          }
       }
 
-      // Sync final text to history
       updateSessionAndHistory(currentSessionState);
 
-      // --- Post-Processing: Map & Title ---
-
-      // 1. Map Data
+      // Post-Processing
       const { cleanedText, mapData } = extractMapData(fullText);
       let finalMapData = mapData;
 
@@ -300,7 +267,6 @@ function App() {
         }
       }
 
-      // Update session with cleaned text and map data
       const finalSession = {
           ...currentSessionState,
           messages: currentSessionState.messages.map(m => 
@@ -317,8 +283,6 @@ function App() {
           if (window.innerWidth > 768) setIsMapOpen(true);
       }
 
-      // 2. Auto Title
-      // Check if name is still default and we have content
       if ((finalSession.name === '新行程' || finalSession.name === '新旅行计划') && finalSession.messages.length >= 3) {
           generateSessionTitle(userMsg.text, cleanedText).then(newTitle => {
               const titledSession = { ...finalSession, name: newTitle };
@@ -340,7 +304,6 @@ function App() {
 
   return (
     <div className="flex h-screen bg-gray-50 overflow-hidden relative">
-      
       {/* Sidebar */}
       <div className="hidden md:flex flex-col w-64 bg-slate-900 text-slate-300 border-r border-slate-800 shrink-0">
         <div className="p-4 border-b border-slate-800">
@@ -394,8 +357,6 @@ function App() {
                            {s.name}
                         </button>
                     )}
-                    
-                    {/* Actions (Edit + Delete) */}
                     {editingSessionId !== s.id && (
                         <div className={`absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 transition-opacity ${
                             s.id === session.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
@@ -403,7 +364,6 @@ function App() {
                             <button
                                 onClick={(e) => handleEditTitle(e, s)}
                                 className="p-1.5 rounded text-slate-400 hover:text-white hover:bg-slate-700 transition-colors"
-                                title="重命名"
                             >
                                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
@@ -412,7 +372,6 @@ function App() {
                             <button
                                 onClick={(e) => deleteSession(e, s.id)}
                                 className="p-1.5 rounded text-slate-400 hover:text-red-400 hover:bg-slate-700 transition-colors"
-                                title="删除"
                             >
                                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -427,15 +386,13 @@ function App() {
         <div className="p-4 border-t border-slate-800">
              <div className="flex items-center gap-2 text-xs text-slate-500">
                  <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
-                 <span>豆包模型在线</span>
+                 <span>豆包模型(Doubao)在线</span>
              </div>
         </div>
       </div>
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col relative h-full min-w-0">
-        
-        {/* Header */}
         <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-4 md:px-6 z-10 shrink-0 shadow-sm">
             <div className="flex items-center gap-3 overflow-hidden">
                 <span className="md:hidden font-bold text-gray-800 whitespace-nowrap">AI 助手</span>
@@ -452,7 +409,6 @@ function App() {
                     </span>
                 )}
             </div>
-            
             <div className="flex items-center space-x-2 md:space-x-4 shrink-0">
                 <Button 
                     variant="secondary" 
@@ -466,7 +422,6 @@ function App() {
                     </svg>
                     地图
                 </Button>
-                
                 <Button variant="ghost" size="sm" onClick={() => setIsSettingsOpen(true)}>
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
@@ -476,9 +431,7 @@ function App() {
             </div>
         </header>
 
-        {/* Workspace: Chat + Map */}
         <div className="flex-1 flex overflow-hidden relative">
-            {/* Chat Area */}
             <div className={`flex flex-col h-full transition-all duration-300 ease-in-out ${isMapOpen ? 'w-full md:w-1/2 lg:w-5/12' : 'w-full mx-auto max-w-4xl'}`}>
                 <div className="flex-1 overflow-y-auto p-4 md:p-6 scroll-smooth">
                     {session.messages.map(msg => (
@@ -495,8 +448,6 @@ function App() {
                     ))}
                     <div ref={messagesEndRef} />
                 </div>
-                
-                {/* Input Area */}
                 <div className="p-4 bg-white border-t border-gray-200">
                     <form onSubmit={handleSendMessage} className="relative max-w-4xl mx-auto flex items-end gap-2 bg-gray-50 p-2 rounded-2xl border border-gray-200 shadow-sm focus-within:ring-2 focus-within:ring-blue-100 focus-within:border-blue-400 transition-all">
                         <textarea
@@ -532,7 +483,6 @@ function App() {
                 </div>
             </div>
 
-            {/* Map Area - Desktop (Sliding / Split) */}
             <div className={`
                 fixed inset-0 z-20 md:static md:z-0
                 bg-white border-l border-gray-200 shadow-xl md:shadow-none
@@ -543,7 +493,6 @@ function App() {
                 }
             `}>
                 <div className="h-full relative">
-                     {/* Mobile Close Map Button */}
                     <button 
                         onClick={() => setIsMapOpen(false)}
                         className="md:hidden absolute top-4 left-4 z-50 bg-white p-2 rounded-full shadow-lg border border-gray-200 text-gray-700"
@@ -552,9 +501,7 @@ function App() {
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                          </svg>
                     </button>
-                    
                     <MapContainer mapData={currentMapData} />
-                    
                     {!currentMapData && (
                         <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80 z-10 p-6 text-center pointer-events-none">
                             <div className="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center mb-4">
@@ -568,7 +515,6 @@ function App() {
                             </p>
                         </div>
                     )}
-
                     {mapLoading && (
                         <div className="absolute inset-0 flex items-center justify-center bg-white/50 z-50 backdrop-blur-[1px]">
                             <div className="bg-white px-5 py-3 rounded-xl shadow-xl flex items-center space-x-3 border border-gray-100">
@@ -587,7 +533,6 @@ function App() {
             </div>
         </div>
       </div>
-
       <SettingsModal 
         isOpen={isSettingsOpen} 
         onClose={() => setIsSettingsOpen(false)} 

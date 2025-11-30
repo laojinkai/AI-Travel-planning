@@ -1,8 +1,11 @@
 import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
-import { SYSTEM_INSTRUCTION } from "../constants";
 import { Message, UserPreferences } from "../types";
+import { SYSTEM_INSTRUCTION } from "../constants";
 
-// Helper to format preferences into a prompt context string
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const MODEL_NAME = 'gemini-2.5-flash';
+
+// 格式化用户偏好
 export const formatPreferencesContext = (prefs: UserPreferences): string => {
   const parts = [];
   if (prefs.destination) parts.push(`目的地: ${prefs.destination}`);
@@ -16,17 +19,17 @@ export const formatPreferencesContext = (prefs: UserPreferences): string => {
   
   if (parts.length === 0) return "";
   
-  return `\n\n[用户旅行偏好上下文]:\n${parts.join('\n')}\n(如果相关，请使用此上下文来指导您的回复，但优先考虑用户最新的消息。)`;
+  return `\n\n[用户旅行偏好上下文]:\n${parts.join('\n')}\n(请参考此上下文生成行程，如果用户有新指令则优先满足新指令)`;
 };
 
-// Return a dummy object since we handle state manually in App.tsx
 export const createChatSession = async (): Promise<any> => {
   return {};
 };
 
-// Generate a short title for the session
+// 生成短标题
 export const generateSessionTitle = async (userMessage: string, aiResponse: string): Promise<string> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  if (!process.env.API_KEY) return "新旅行计划";
+
   const prompt = `
     请根据以下关于旅游规划的对话内容，生成一个非常简短的标题（10个汉字以内）。
     
@@ -41,14 +44,11 @@ export const generateSessionTitle = async (userMessage: string, aiResponse: stri
   `;
 
   try {
-    const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-        config: {
-            systemInstruction: "你是一个善于总结的助手。",
-        }
+    const response: GenerateContentResponse = await ai.models.generateContent({
+      model: MODEL_NAME,
+      contents: prompt,
     });
-    
+
     const title = response.text?.trim();
     return title ? title.replace(/["《》]/g, '') : "新旅行计划";
   } catch (e) {
@@ -57,47 +57,51 @@ export const generateSessionTitle = async (userMessage: string, aiResponse: stri
   }
 };
 
-// Stream handling for Gemini
+// 使用 Google GenAI SDK 实现流式对话
 export async function* sendMessageStream(
   _dummyChat: any,
   userMessage: string,
   preferences?: UserPreferences,
   messageHistory: Message[] = []
 ) {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const context = preferences ? formatPreferencesContext(preferences) : "";
+  if (!process.env.API_KEY) {
+    yield { text: "⚠️ 错误：未检测到 API Key。请在环境变量中配置 API_KEY。" };
+    return;
+  }
 
-  // Construct contents for Gemini
-  const contents = messageHistory.map((m, index) => {
-      let text = m.text;
-      // Append context to the very last user message for relevance
-      if (index === messageHistory.length - 1 && m.role === 'user') {
-          text += context;
-      }
-      return {
-          role: m.role === 'model' ? 'model' : 'user',
-          parts: [{ text: text }]
-      };
-  });
+  const context = preferences ? formatPreferencesContext(preferences) : "";
+  let finalUserContent = userMessage;
+  if (context) {
+      finalUserContent += `\n${context}`;
+  }
+  
+  // 历史记录转换
+  const history = messageHistory.map(m => ({
+    role: m.role,
+    parts: [{ text: m.text }]
+  }));
 
   try {
-    const responseStream = await ai.models.generateContentStream({
-        model: 'gemini-2.5-flash',
-        contents: contents,
-        config: {
-            systemInstruction: SYSTEM_INSTRUCTION,
-        }
+    const chat = ai.chats.create({
+      model: MODEL_NAME,
+      history: history,
+      config: {
+        systemInstruction: SYSTEM_INSTRUCTION,
+      }
     });
 
-    for await (const chunk of responseStream) {
-        const c = chunk as GenerateContentResponse;
-        if (c.text) {
-            yield { text: c.text };
-        }
+    const result = await chat.sendMessageStream({ message: finalUserContent });
+
+    for await (const chunk of result) {
+      const c = chunk as GenerateContentResponse;
+      const text = c.text;
+      if (text) {
+        yield { text };
+      }
     }
 
   } catch (error) {
-    console.error("Gemini API request failed:", error);
-    yield { text: "\n\n(抱歉，连接 AI 服务时出现网络错误，请检查 API Key 是否配置正确，或者稍后重试。)" };
+    console.error("Stream error:", error);
+    yield { text: "\n\n(网络连接中断，请检查网络或 API Key 设置。)" };
   }
 }
