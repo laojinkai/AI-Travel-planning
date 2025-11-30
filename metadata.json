@@ -1,5 +1,5 @@
 {
   "name": "AI 智能旅游规划",
-  "description": "基于 Gemini 和高德地图的智能旅游规划平台。创建、定制并可视化您的完美旅行行程。",
+  "description": "基于豆包大模型和高德地图的智能旅游规划平台。创建、定制并可视化您的完美旅行行程。",
   "requestFramePermissions": []
 }

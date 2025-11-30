@@ -1,4 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 import { SYSTEM_INSTRUCTION } from "../constants";
 import { Message, UserPreferences } from "../types";
 
@@ -24,7 +24,7 @@ export const createChatSession = async (): Promise<any> => {
   return {};
 };
 
-// Generate a short title for the session using Gemini
+// Generate a short title for the session
 export const generateSessionTitle = async (userMessage: string, aiResponse: string): Promise<string> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const prompt = `
@@ -42,10 +42,13 @@ export const generateSessionTitle = async (userMessage: string, aiResponse: stri
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+        config: {
+            systemInstruction: "你是一个善于总结的助手。",
+        }
     });
-
+    
     const title = response.text?.trim();
     return title ? title.replace(/["《》]/g, '') : "新旅行计划";
   } catch (e) {
@@ -64,37 +67,37 @@ export async function* sendMessageStream(
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const context = preferences ? formatPreferencesContext(preferences) : "";
 
-  // Construct content for the API
-  // messageHistory includes the latest user message at the end
+  // Construct contents for Gemini
   const contents = messageHistory.map((m, index) => {
-    let text = m.text;
-    // Append context to the very last user message
-    if (index === messageHistory.length - 1 && m.role === 'user') {
-        text += context;
-    }
-    return {
-      role: m.role,
-      parts: [{ text: text }]
-    };
+      let text = m.text;
+      // Append context to the very last user message for relevance
+      if (index === messageHistory.length - 1 && m.role === 'user') {
+          text += context;
+      }
+      return {
+          role: m.role === 'model' ? 'model' : 'user',
+          parts: [{ text: text }]
+      };
   });
 
   try {
     const responseStream = await ai.models.generateContentStream({
-      model: 'gemini-2.5-flash',
-      contents: contents,
-      config: {
-        systemInstruction: SYSTEM_INSTRUCTION,
-      }
+        model: 'gemini-2.5-flash',
+        contents: contents,
+        config: {
+            systemInstruction: SYSTEM_INSTRUCTION,
+        }
     });
 
     for await (const chunk of responseStream) {
-        if (chunk.text) {
-            yield { text: chunk.text };
+        const c = chunk as GenerateContentResponse;
+        if (c.text) {
+            yield { text: c.text };
         }
     }
 
   } catch (error) {
     console.error("Gemini API request failed:", error);
-    yield { text: "\n\n(抱歉，连接 AI 服务时出现网络错误，请稍后重试。)" };
+    yield { text: "\n\n(抱歉，连接 AI 服务时出现网络错误，请检查 API Key 是否配置正确，或者稍后重试。)" };
   }
 }

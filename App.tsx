@@ -113,11 +113,6 @@ function App() {
       // Check if current session exists in history
       const exists = sessionsHistory.find(s => s.id === session.id);
       if (!exists && sessionsHistory.length === 0) {
-          // If it's the very first load and we have a default session, let's NOT save it yet 
-          // to keep history clean until user interacts? 
-          // OR user requested "save immediately". Let's save it if it's explicitly created.
-          // For the 'default' init, we might wait. 
-          // But to be safe and consistent with "restore", let's sync it if it has messages.
           if (session.messages.length > 0) {
               setSessionsHistory([session]);
           }
@@ -267,8 +262,7 @@ function App() {
           ...sessionAfterUserMsg,
           messages: [...sessionAfterUserMsg.messages, { id: responseId, role: 'model' as const, text: '...', timestamp: Date.now() }]
       };
-      // Don't sync history on every single character token, it's too expensive. 
-      // But we should sync at least the placeholder.
+      
       updateSessionAndHistory(currentSessionState);
 
       for await (const chunk of responseStream) {
