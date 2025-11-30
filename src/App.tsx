@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { ChatSession, Message, UserPreferences, MapData } from './types';
 import { INITIAL_PREFERENCES } from './constants';

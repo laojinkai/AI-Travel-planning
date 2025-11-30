@@ -1,12 +1,9 @@
-
+import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 import { Message, UserPreferences } from "../types";
 import { SYSTEM_INSTRUCTION } from "../constants";
 
-// 使用 Vite 标准环境变量 (解决白屏问题)
-const API_KEY = (import.meta as any).env.VITE_DOUBAO_API_KEY;
-// 豆包 API配置
-const API_URL = "https://ark.cn-beijing.volces.com/api/v3/chat/completions";
-const MODEL_NAME = "doubao-seed-1-6-flash-250828"; // 您提供的豆包模型 ID
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const MODEL_NAME = 'gemini-2.5-flash';
 
 // 格式化用户偏好
 export const formatPreferencesContext = (prefs: UserPreferences): string => {
@@ -31,7 +28,7 @@ export const createChatSession = async (): Promise<any> => {
 
 // 生成短标题
 export const generateSessionTitle = async (userMessage: string, aiResponse: string): Promise<string> => {
-  if (!API_KEY) return "新旅行计划";
+  if (!process.env.API_KEY) return "新旅行计划";
 
   const prompt = `
     请根据以下关于旅游规划的对话内容，生成一个非常简短的标题（10个汉字以内）。
@@ -47,21 +44,12 @@ export const generateSessionTitle = async (userMessage: string, aiResponse: stri
   `;
 
   try {
-    const response = await fetch(API_URL, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${API_KEY}`
-        },
-        body: JSON.stringify({
-            model: MODEL_NAME,
-            messages: [{ role: 'user', content: prompt }],
-            stream: false
-        })
+    const response: GenerateContentResponse = await ai.models.generateContent({
+      model: MODEL_NAME,
+      contents: prompt,
     });
 
-    const data = await response.json();
-    const title = data.choices?.[0]?.message?.content?.trim();
+    const title = response.text?.trim();
     return title ? title.replace(/["《》]/g, '') : "新旅行计划";
   } catch (e) {
     console.warn("Failed to generate title", e);
@@ -69,15 +57,15 @@ export const generateSessionTitle = async (userMessage: string, aiResponse: stri
   }
 };
 
-// 使用 Fetch 实现豆包 API 流式对话
+// 使用 Google GenAI SDK 实现流式对话
 export async function* sendMessageStream(
   _dummyChat: any,
   userMessage: string,
   preferences?: UserPreferences,
   messageHistory: Message[] = []
 ) {
-  if (!API_KEY) {
-    yield { text: "⚠️ 错误：未检测到 API Key。请在 Vercel 环境变量中配置 VITE_DOUBAO_API_KEY。" };
+  if (!process.env.API_KEY) {
+    yield { text: "⚠️ 错误：未检测到 API Key。请在环境变量中配置 API_KEY。" };
     return;
   }
 
@@ -87,71 +75,33 @@ export async function* sendMessageStream(
       finalUserContent += `\n${context}`;
   }
   
-  // 构造豆包/OpenAI 格式的消息历史
-  const messages = [
-      { role: 'system', content: SYSTEM_INSTRUCTION },
-      ...messageHistory.map(m => ({
-          role: m.role === 'model' ? 'assistant' : 'user',
-          content: m.text
-      })),
-      { role: 'user', content: finalUserContent }
-  ];
+  // 历史记录转换
+  const history = messageHistory.map(m => ({
+    role: m.role,
+    parts: [{ text: m.text }]
+  }));
 
   try {
-    const response = await fetch(API_URL, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${API_KEY}`
-        },
-        body: JSON.stringify({
-            model: MODEL_NAME,
-            messages: messages,
-            stream: true // 开启流式传输
-        })
+    const chat = ai.chats.create({
+      model: MODEL_NAME,
+      history: history,
+      config: {
+        systemInstruction: SYSTEM_INSTRUCTION,
+      }
     });
 
-    if (!response.ok) {
-        const err = await response.text();
-        console.error("Doubao API Error:", err);
-        throw new Error(`API Error: ${response.status}`);
-    }
+    const result = await chat.sendMessageStream({ message: finalUserContent });
 
-    if (!response.body) throw new Error("No response body");
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder("utf-8");
-    let buffer = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || ""; // 保留未完成的行
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data: ")) continue;
-        
-        const dataStr = trimmed.slice(6);
-        if (dataStr === "[DONE]") continue;
-
-        try {
-            const json = JSON.parse(dataStr);
-            const content = json.choices?.[0]?.delta?.content;
-            if (content) {
-                yield { text: content };
-            }
-        } catch (e) {
-            console.warn("Parse error", e);
-        }
+    for await (const chunk of result) {
+      const c = chunk as GenerateContentResponse;
+      const text = c.text;
+      if (text) {
+        yield { text };
       }
     }
 
   } catch (error) {
     console.error("Stream error:", error);
-    yield { text: "\n\n(网络连接中断或 API 额度不足，请检查 Vercel 环境变量设置。)" };
+    yield { text: "\n\n(网络连接中断，请检查网络或 API Key 设置。)" };
   }
 }

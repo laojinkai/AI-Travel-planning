@@ -1,4 +1,3 @@
-
 import { MapData, ItineraryPoint } from "../types";
 
 // Regex to find the custom json block
