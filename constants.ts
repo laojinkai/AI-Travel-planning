@@ -1,8 +1,3 @@
-
-export const DOUBAO_API_KEY = "2b29d4e1-2955-41ed-a6cb-2f42cb85af6e";
-export const DOUBAO_MODEL = "doubao-seed-1-6-flash-250828";
-export const DOUBAO_ENDPOINT = "https://ark.cn-beijing.volces.com/api/v3/chat/completions";
-
 export const INITIAL_PREFERENCES = {
   destination: '',
   origin: '',
