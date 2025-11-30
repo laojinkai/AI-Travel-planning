@@ -1,11 +1,17 @@
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 import { Message, UserPreferences } from "../types";
 import { SYSTEM_INSTRUCTION } from "../constants";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-const MODEL_NAME = 'gemini-2.5-flash';
+// Doubao API Configuration
+const API_URL = "https://ark.cn-beijing.volces.com/api/v3/chat/completions";
+// User provided model ID or default to a common one. 
+// Using the one from user's curl example: doubao-seed-1-6-flash-250828
+const MODEL_ID = "doubao-seed-1-6-flash-250828"; 
 
-// 格式化用户偏好
+const getApiKey = () => {
+  // Priority: Vite Env Var -> Process Env (fallback)
+  return import.meta.env.VITE_DOUBAO_API_KEY || process.env.VITE_DOUBAO_API_KEY || '';
+};
+
 export const formatPreferencesContext = (prefs: UserPreferences): string => {
   const parts = [];
   if (prefs.destination) parts.push(`目的地: ${prefs.destination}`);
@@ -26,9 +32,9 @@ export const createChatSession = async (): Promise<any> => {
   return {};
 };
 
-// 生成短标题
 export const generateSessionTitle = async (userMessage: string, aiResponse: string): Promise<string> => {
-  if (!process.env.API_KEY) return "新旅行计划";
+  const apiKey = getApiKey();
+  if (!apiKey) return "新旅行计划";
 
   const prompt = `
     请根据以下关于旅游规划的对话内容，生成一个非常简短的标题（10个汉字以内）。
@@ -44,12 +50,23 @@ export const generateSessionTitle = async (userMessage: string, aiResponse: stri
   `;
 
   try {
-    const response: GenerateContentResponse = await ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: prompt,
+    const response = await fetch(API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: MODEL_ID,
+        messages: [
+          { role: "user", content: prompt }
+        ],
+        stream: false
+      })
     });
 
-    const title = response.text?.trim();
+    const data = await response.json();
+    const title = data.choices?.[0]?.message?.content?.trim();
     return title ? title.replace(/["《》]/g, '') : "新旅行计划";
   } catch (e) {
     console.warn("Failed to generate title", e);
@@ -57,15 +74,16 @@ export const generateSessionTitle = async (userMessage: string, aiResponse: stri
   }
 };
 
-// 使用 Google GenAI SDK 实现流式对话
 export async function* sendMessageStream(
   _dummyChat: any,
   userMessage: string,
   preferences?: UserPreferences,
   messageHistory: Message[] = []
 ) {
-  if (!process.env.API_KEY) {
-    yield { text: "⚠️ 错误：未检测到 API Key。请在环境变量中配置 API_KEY。" };
+  const apiKey = getApiKey();
+
+  if (!apiKey) {
+    yield { text: "⚠️ 错误：未检测到 API Key。请在 Vercel 环境变量中配置 VITE_DOUBAO_API_KEY。" };
     return;
   }
 
@@ -75,28 +93,70 @@ export async function* sendMessageStream(
       finalUserContent += `\n${context}`;
   }
   
-  // 历史记录转换
-  const history = messageHistory.map(m => ({
-    role: m.role,
-    parts: [{ text: m.text }]
+  // Convert history to OpenAI format
+  const historyMessages = messageHistory.map(m => ({
+    role: m.role === 'model' ? 'assistant' : 'user',
+    content: m.text
   }));
 
+  const messages = [
+    { role: "system", content: SYSTEM_INSTRUCTION },
+    ...historyMessages,
+    { role: "user", content: finalUserContent }
+  ];
+
   try {
-    const chat = ai.chats.create({
-      model: MODEL_NAME,
-      history: history,
-      config: {
-        systemInstruction: SYSTEM_INSTRUCTION,
-      }
+    const response = await fetch(API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: MODEL_ID,
+        messages: messages,
+        stream: true,
+        temperature: 0.7
+      })
     });
 
-    const result = await chat.sendMessageStream({ message: finalUserContent });
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("API Error:", errorText);
+      yield { text: `API 请求失败: ${response.status} ${response.statusText}` };
+      return;
+    }
 
-    for await (const chunk of result) {
-      const c = chunk as GenerateContentResponse;
-      const text = c.text;
-      if (text) {
-        yield { text };
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder("utf-8");
+
+    if (!reader) {
+      yield { text: "无法读取响应流" };
+      return;
+    }
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split("\n").filter(line => line.trim() !== "");
+
+      for (const line of lines) {
+        if (line.trim() === "data: [DONE]") return;
+        
+        if (line.startsWith("data: ")) {
+          try {
+            const jsonStr = line.slice(6);
+            const data = JSON.parse(jsonStr);
+            const content = data.choices?.[0]?.delta?.content;
+            if (content) {
+              yield { text: content };
+            }
+          } catch (e) {
+            console.debug("Error parsing SSE chunk", e);
+          }
+        }
       }
     }
 
